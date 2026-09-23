@@ -6,6 +6,9 @@ import 'package:media_kit/media_kit.dart';
 
 import 'models.dart';
 import 'playback_preferences.dart';
+import 'video_enhancement.dart';
+import 'video_enhancement_preferences.dart';
+import 'video_enhancement_settings.dart';
 import 'playback_buffer.dart';
 import 'remote_widgets.dart';
 import 'widgets.dart';
@@ -16,6 +19,7 @@ class TelevisionControls extends StatefulWidget {
     required this.player,
     required this.title,
     required this.enabled,
+    required this.showOnPlaybackReady,
     required this.onTogglePlayback,
     required this.onSeek,
     required this.onPrevious,
@@ -24,10 +28,12 @@ class TelevisionControls extends StatefulWidget {
     required this.onSettings,
     required this.onBack,
     this.onPush,
+    this.enhancement,
   });
   final Player player;
   final String title;
   final bool enabled;
+  final bool showOnPlaybackReady;
   final VoidCallback onTogglePlayback;
   final ValueChanged<int> onSeek;
   final VoidCallback? onPrevious;
@@ -36,6 +42,7 @@ class TelevisionControls extends StatefulWidget {
   final Future<void> Function() onSettings;
   final VoidCallback onBack;
   final Future<void> Function()? onPush;
+  final VideoEnhancementController? enhancement;
 
   @override
   State<TelevisionControls> createState() => _TelevisionControlsState();
@@ -58,6 +65,7 @@ class _TelevisionControlsState extends State<TelevisionControls> {
   @override
   void initState() {
     super.initState();
+    _visible = widget.showOnPlaybackReady;
     for (final stream in [
       widget.player.stream.position,
       widget.player.stream.duration,
@@ -82,14 +90,27 @@ class _TelevisionControlsState extends State<TelevisionControls> {
         }
       }),
     );
-    if (widget.enabled) _show();
+    if (widget.enabled) {
+      if (widget.showOnPlaybackReady || !widget.player.state.playing) {
+        _show();
+      } else {
+        _visible = false;
+        _focus(_surface);
+      }
+    }
   }
 
   @override
   void didUpdateWidget(covariant TelevisionControls oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.enabled && !oldWidget.enabled) {
-      _show();
+      if (widget.showOnPlaybackReady || !widget.player.state.playing) {
+        _show();
+      } else {
+        setState(() => _visible = false);
+        _hideTimer?.cancel();
+        _focus(_surface);
+      }
     } else if (!widget.enabled) {
       _hideTimer?.cancel();
     }
@@ -403,6 +424,29 @@ class _TelevisionControlsState extends State<TelevisionControls> {
                               onPressed: () =>
                                   _openPanel(widget.onEpisodes, _episodes),
                             ),
+                            if (widget.enhancement != null)
+                              AnimatedBuilder(
+                                animation: widget.enhancement!,
+                                builder: (_, _) {
+                                  final enhancement = widget.enhancement!;
+                                  if (!enhancement.canCompare)
+                                    return const SizedBox.shrink();
+                                  return RemoteButton(
+                                    key: const ValueKey(
+                                      'tv-enhancement-compare',
+                                    ),
+                                    label: enhancement.comparing
+                                        ? '恢复增强'
+                                        : '原画对比',
+                                    icon: Icons.compare_rounded,
+                                    onPressed: () {
+                                      unawaited(enhancement.toggleCompare());
+                                      _focus(_play);
+                                      _scheduleHide();
+                                    },
+                                  );
+                                },
+                              ),
                             if (widget.onPush != null)
                               RemoteButton(
                                 key: const ValueKey('tv-lan-push'),
@@ -491,12 +535,14 @@ class TelevisionPlaybackSetting {
     this.autoAdvance,
     this.danmaku,
     this.preload,
+    this.enhancement,
   });
   final double? speed;
   final int? quality;
   final bool? autoAdvance;
   final bool? danmaku;
   final bool? preload;
+  final VideoEnhancementPreferences? enhancement;
 }
 
 class TelevisionSettingsDialog extends StatelessWidget {
@@ -514,6 +560,8 @@ class TelevisionSettingsDialog extends StatelessWidget {
     this.onRetryDanmaku,
     this.preload = true,
     this.preloadStatus = '',
+    this.enhancement,
+    this.onCompareEnhancement,
   });
   final double speed;
   final int quality;
@@ -527,6 +575,8 @@ class TelevisionSettingsDialog extends StatelessWidget {
   final VoidCallback? onRetryDanmaku;
   final bool preload;
   final String preloadStatus;
+  final VideoEnhancementController? enhancement;
+  final VoidCallback? onCompareEnhancement;
 
   @override
   Widget build(BuildContext context) => AlertDialog(
@@ -580,6 +630,16 @@ class TelevisionSettingsDialog extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 20),
+            if (enhancement != null)
+              VideoEnhancementSettings(
+                controller: enhancement!,
+                television: true,
+                onChanged: (value) => Navigator.pop(
+                  context,
+                  TelevisionPlaybackSetting(enhancement: value),
+                ),
+                onCompare: onCompareEnhancement ?? () {},
+              ),
             if (showDanmaku) ...[
               RemoteButton(
                 key: const ValueKey('tv-danmaku-enabled'),
