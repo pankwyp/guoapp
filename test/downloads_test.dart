@@ -233,11 +233,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData.dark(),
-        home: DetailScreen(
-          drama: drama,
-          repository: repository,
-          store: store,
-        ),
+        home: DetailScreen(drama: drama, repository: repository, store: store),
       ),
     );
     await tester.pumpAndSettle();
