@@ -176,6 +176,9 @@ jobs:
 
   ios:
     needs: checks
+    # iOS 跑在 macOS 上，计费倍率是 10×（一次构建约占全部配额的三分之二）。
+    # 因此改为只在手动触发时构建；需要 IPA 时到 Actions 页面手动 Run workflow。
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
@@ -210,7 +213,12 @@ jobs:
 
   release:
     needs: [android, ios, windows]
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.android.result == 'success' && needs.ios.result == 'success'
+    # 允许手动触发；iOS 在 push 构建里会被跳过（skipped），此时照样发布 Android / Windows 产物。
+    if: >-
+      always() && github.ref == 'refs/heads/main'
+      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && needs.android.result == 'success'
+      && (needs.ios.result == 'success' || needs.ios.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -242,6 +250,7 @@ jobs:
       - name: 发布 Release
         env:
           GH_TOKEN: ${{ github.token }}
+          IOS_RESULT: ${{ needs.ios.result }}
         run: |
           set -euo pipefail
           version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1)
@@ -254,8 +263,10 @@ jobs:
             printf '%s\n' "- *-arm64-v8a.apk：绝大多数手机选这个"
             printf '%s\n' "- *-armeabi-v7a.apk：较老的 32 位手机"
             printf '%s\n' "- *-x86_64.apk：模拟器"
-            printf '\n%s\n' "iOS（未签名，需自行签名后才能安装）："
-            printf '%s\n' "- *-ios-unsigned.ipa：未签名 IPA，用 AltStore / Sideloadly / TrollStore 等工具自签后安装"
+            if [ "${IOS_RESULT}" = "success" ]; then
+              printf '\n%s\n' "iOS（未签名，需自行签名后才能安装）："
+              printf '%s\n' "- *-ios-unsigned.ipa：未签名 IPA，用 AltStore / Sideloadly / TrollStore 等工具自签后安装"
+            fi
             printf '\n%s\n' "Windows（解压后运行 hongguojian.exe 或 zhenguojian.exe）："
             printf '%s\n' "- *-windows-x64.zip：Windows 10/11 x64 完整包；构建机没有音频和图形设备，播放自检未通过，未做设备验收"
             printf '\n%s\n' "校验：SHA256SUMS.txt"
@@ -265,11 +276,31 @@ jobs:
             gh release upload "$tag" release/* --clobber
             gh release edit "$tag" --title "红果鉴 / 真果鉴 ${version}" --notes-file notes.md
             # 清理上一次构建留下、本轮已不再产出的附件，避免下载到过期文件。
-            for name in $(gh release view "$tag" --json assets --jq '.assets[].name'); do
-              if [ ! -e "release/$name" ]; then
-                gh release delete-asset "$tag" "$name" --yes
-              fi
-            done
+            # iOS 未参与本轮构建时跳过清理，以免误删已有的 IPA。
+            if [ "${IOS_RESULT}" = "success" ]; then
+              for name in $(gh release view "$tag" --json assets --jq '.assets[].name'); do
+                if [ ! -e "release/$name" ]; then
+                  gh release delete-asset "$tag" "$name" --yes
+                fi
+              done
+            fi
           else
             gh release create "$tag" release/* --title "红果鉴 / 真果鉴 ${version}" --notes-file notes.md
           fi
+      - name: 同步到公开发布镜像
+        # 主仓库为私有后，下载页由公开镜像承担；下载页地址即镜像的 Releases。
+        env:
+          GH_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          MIRROR_REPO: chenweitian423/guoapp-release
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1)
+          tag="app-v${version//+/-}"
+          mirror="${MIRROR_REPO}"
+          if gh release view "$tag" --repo "$mirror" >/dev/null 2>&1; then
+            gh release upload "$tag" release/* --repo "$mirror" --clobber
+          else
+            gh release create "$tag" release/* --repo "$mirror" --title "红果鉴 / 真果鉴 ${version}" --notes-file notes.md
+          fi
+          gh release edit "$tag" --repo "$mirror" --title "红果鉴 / 真果鉴 ${version}" --notes-file notes.md
+          echo "下载页：https://github.com/${mirror}/releases/tag/${tag}"
